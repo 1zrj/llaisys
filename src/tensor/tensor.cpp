@@ -8,6 +8,16 @@
 
 namespace llaisys {
 
+std::vector<ptrdiff_t> compute_contiguous_strides(const std::vector<size_t> &shape) {
+    std::vector<ptrdiff_t> strides(shape.size());
+    ptrdiff_t stride = 1;
+    for (size_t i = shape.size(); i > 0; --i) {
+        strides[i - 1] = stride;
+        stride *= static_cast<ptrdiff_t>(shape[i - 1]);
+    }
+    return strides;
+}
+
 Tensor::Tensor(TensorMeta meta, core::storage_t storage, size_t offset)
     : _meta(std::move(meta)), _storage(std::move(storage)), _offset(offset) {}
 
@@ -164,27 +174,65 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    TO_BE_IMPLEMENTED();
+    size_t ndim = this->ndim();
+    size_t stride = 1;
+    for (size_t i = 1; i <= ndim; i++) {
+        if (static_cast<size_t>(this->strides()[ndim - i]) != stride) {
+            return false;
+        }
+        stride *= this->shape()[ndim - i];
+    }    
     return true;
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    CHECK_ARGUMENT(order.size() == this->ndim(), "Permute: order size mismatch");
+    TensorMeta meta;
+    meta.dtype = _meta.dtype;
+    meta.shape.resize(order.size());
+    meta.strides.resize(order.size());
+    for (size_t i = 0; i < order.size(); i++) {
+        meta.shape[i] = _meta.shape[order[i]];
+        meta.strides[i] = _meta.strides[order[i]];
+    }    
+    return std::shared_ptr<Tensor>(new Tensor(std::move(meta), _storage, _offset));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    size_t new_numel = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    CHECK_ARGUMENT(new_numel == this->numel(), "View: number of elements mismatch");
+
+    TensorMeta meta;
+    meta.dtype = _meta.dtype;
+    meta.shape = shape;
+    meta.strides = compute_contiguous_strides(shape);
+    return std::shared_ptr<Tensor>(new Tensor(std::move(meta), _storage, _offset));
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    TensorMeta meta;
+    meta.dtype = _meta.dtype;
+    meta.shape = _meta.shape;
+    meta.strides = _meta.strides;
+    CHECK_ARGUMENT(dim < this->ndim(), "Slice: dim out of range");
+    CHECK_ARGUMENT(start < end && end <= this->shape()[dim], "Slice: invalid slice range");
+    meta.shape[dim] = end - start;
+    size_t offset = static_cast<size_t>(_meta.strides[dim]) * start * this->elementSize();
+    return std::shared_ptr<Tensor>(new Tensor(std::move(meta), _storage, _offset + offset));
 }
 
 void Tensor::load(const void *src_) {
-    TO_BE_IMPLEMENTED();
+    //TO_BE_IMPLEMENTED();
+    size_t nbytes = numel() * elementSize();
+
+    llaisysDeviceType_t dev_type = deviceType();
+    int dev_id = deviceId();
+    core::context().setDevice(dev_type, dev_id);
+    if (dev_type == LLAISYS_DEVICE_CPU) {
+        core::context().runtime().api()->memcpy_sync(this->data(), src_, nbytes, LLAISYS_MEMCPY_H2H);
+    } else {
+        core::context().runtime().api()->memcpy_sync(this->data(), src_, nbytes, LLAISYS_MEMCPY_H2D);
+    }
 }
 
 tensor_t Tensor::contiguous() const {
